@@ -1,0 +1,50 @@
+2025-10-12 23:44:31,825 - setup - INFO - Criando diretórios em data
+2025-10-12 23:44:31,825 - setup - INFO - Criando diretório: data/pipelines
+2025-10-12 23:44:31,825 - setup - INFO - Criando diretório: data/web_content
+2025-10-12 23:44:31,825 - setup - INFO - Criando diretório: data/pdf_content
+2025-10-12 23:44:31,826 - setup - INFO - Criando diretório: data/github_content
+2025-10-12 23:44:31,826 - setup - INFO - Criando diretório: data/youtube_content
+2025-10-12 23:44:31,826 - setup - INFO - Criando diretório: data/processed
+2025-10-12 23:44:31,826 - setup - INFO - Criando diretório: data/approved
+2025-10-12 23:44:31,826 - setup - INFO - Criando diretório: logs
+2025-10-12 23:44:31,826 - setup - INFO - Diretórios criados com sucesso
+2025-10-12 23:44:31,826 - setup - INFO - Verificando dependências
+2025-10-12 23:44:31,826 - setup - INFO - ✓ pydantic instalado
+2025-10-12 23:44:31,826 - setup - INFO - ✓ requests instalado
+2025-10-12 23:44:31,827 - setup - WARNING - ✗ beautifulsoup4 não encontrado
+2025-10-12 23:44:31,827 - setup - INFO - ✓ nltk instalado
+2025-10-12 23:44:31,828 - setup - WARNING - ✗ spacy não encontrado
+2025-10-12 23:44:31,828 - setup - WARNING - ✗ scikit-learn não encontrado
+2025-10-12 23:44:31,829 - setup - WARNING - ✗ PyPDF2 não encontrado
+2025-10-12 23:44:31,829 - setup - WARNING - ✗ pdfminer.six não encontrado
+2025-10-12 23:44:31,829 - setup - WARNING - ✗ PyMuPDF não encontrado
+2025-10-12 23:44:31,830 - setup - WARNING - ✗ GitPython não encontrado
+2025-10-12 23:44:31,830 - setup - WARNING - ✗ gradio não encontrado
+2025-10-12 23:44:31,830 - setup - INFO - Instalando 8 dependências
+2025-10-12 23:44:31,830 - setup - INFO - Instalando beautifulsoup4...
+2025-10-12 23:44:35,578 - setup - INFO - ✓ beautifulsoup4 instalado com sucesso
+2025-10-12 23:44:35,579 - setup - INFO - Instalando spacy...
+2025-10-12 23:46:12,964 - setup - INFO - ✓ spacy instalado com sucesso
+2025-10-12 23:46:12,964 - setup - INFO - Instalando scikit-learn...
+2025-10-12 23:46:33,070 - setup - INFO - ✓ scikit-learn instalado com sucesso
+2025-10-12 23:46:33,070 - setup - INFO - Instalando PyPDF2...
+2025-10-12 23:46:37,828 - setup - INFO - ✓ PyPDF2 instalado com sucesso
+2025-10-12 23:46:37,828 - setup - INFO - Instalando pdfminer.six...
+2025-10-12 23:46:46,262 - setup - INFO - ✓ pdfminer.six instalado com sucesso
+2025-10-12 23:46:46,263 - setup - INFO - Instalando PyMuPDF...
+2025-10-12 23:47:14,197 - setup - INFO - ✓ PyMuPDF instalado com sucesso
+2025-10-12 23:47:14,198 - setup - INFO - Instalando GitPython...
+2025-10-12 23:47:20,474 - setup - INFO - ✓ GitPython instalado com sucesso
+2025-10-12 23:47:20,475 - setup - INFO - Instalando gradio...
+2025-10-12 23:48:41,772 - setup - INFO - ✓ gradio instalado com sucesso
+2025-10-12 23:48:41,772 - setup - INFO - Baixando dados do NLTK
+2025-10-12 23:48:41,773 - setup - INFO - ✓ Dados do NLTK baixados com sucesso
+2025-10-12 23:48:41,773 - setup - INFO - Baixando modelos do spaCy
+2025-10-12 23:48:41,773 - setup - INFO - Baixando modelo pt_core_news_sm...
+2025-10-12 23:49:08,359 - setup - INFO - ✓ Modelo pt_core_news_sm pronto
+2025-10-12 23:49:08,360 - setup - INFO - Baixando modelo en_core_web_sm...
+2025-10-12 23:49:38,158 - setup - INFO - ✓ Modelo en_core_web_sm pronto
+2025-10-12 23:49:38,158 - setup - INFO - Verificando arquivos de exemplo
+2025-10-12 23:49:38,158 - setup - INFO - ✓ Arquivo examples/simple_pipeline.py encontrado
+2025-10-12 23:49:38,158 - setup - INFO - ✓ Arquivo examples/multi_source_pipeline.py encontrado
+2025-10-12 23:49:38,158 - setup - INFO - ✓ Arquivo examples/sources_example.json encontrado

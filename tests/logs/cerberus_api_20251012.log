@@ -1,0 +1,6 @@
+2025-10-12 23:31:11,746 - cerberus_api - INFO - Sistema de logging inicializado
+2025-10-12 23:31:14,053 - cerberus_api.pipeline_builder.ai_manager.eter.llama_standalone - INFO - llama-cpp-python está disponível
+2025-10-12 23:40:22,507 - cerberus_api - INFO - Sistema de logging inicializado
+2025-10-12 23:40:39,483 - cerberus_api.pipeline_builder.ai_manager.eter.llama_standalone - INFO - llama-cpp-python está disponível
+2025-10-12 23:44:28,485 - cerberus_api - INFO - Sistema de logging inicializado
+2025-10-12 23:44:31,496 - cerberus_api.pipeline_builder.ai_manager.eter.llama_standalone - INFO - llama-cpp-python está disponível

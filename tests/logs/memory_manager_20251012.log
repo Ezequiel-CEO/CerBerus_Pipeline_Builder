@@ -1,0 +1,9 @@
+2025-10-12 23:31:11,876 - memory_manager - INFO - CUDA disponível. GPUs: 1, Modelo: NVIDIA GeForce GTX 1050 Ti
+2025-10-12 23:31:11,877 - memory_manager - INFO - Uso de memória inicialização: RAM 10968.6MB / 23767.5MB (55.3%), VRAM 0.0MB / 4031.9MB (0.0%)
+2025-10-12 23:31:11,878 - memory_manager - INFO - Uso de memória inicialização: RAM 21365.6MB / 23767.5MB (89.9%), VRAM 0.0MB / 4031.9MB (0.0%)
+2025-10-12 23:40:37,396 - memory_manager - INFO - CUDA disponível. GPUs: 1, Modelo: NVIDIA GeForce GTX 1050 Ti
+2025-10-12 23:40:37,397 - memory_manager - INFO - Uso de memória inicialização: RAM 12601.9MB / 23767.5MB (62.1%), VRAM 0.0MB / 4031.9MB (0.0%)
+2025-10-12 23:40:37,397 - memory_manager - INFO - Uso de memória inicialização: RAM 22251.1MB / 23767.5MB (93.6%), VRAM 0.0MB / 4031.9MB (0.0%)
+2025-10-12 23:44:29,477 - memory_manager - INFO - CUDA disponível. GPUs: 1, Modelo: NVIDIA GeForce GTX 1050 Ti
+2025-10-12 23:44:29,477 - memory_manager - INFO - Uso de memória inicialização: RAM 11873.9MB / 23767.5MB (59.0%), VRAM 0.0MB / 4031.9MB (0.0%)
+2025-10-12 23:44:29,478 - memory_manager - INFO - Uso de memória inicialização: RAM 21525.8MB / 23767.5MB (90.6%), VRAM 0.0MB / 4031.9MB (0.0%)

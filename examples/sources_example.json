@@ -1,0 +1,39 @@
+[
+  {
+    "name": "Documentação Python",
+    "source_type": "WEB",
+    "location": "https://docs.python.org/pt-br/3/tutorial/",
+    "description": "Documentação oficial do Python em português",
+    "metadata": {
+      "follow_links": true,
+      "max_pages": 5,
+      "depth": 1
+    }
+  },
+  {
+    "name": "Manual de Redação",
+    "source_type": "PDF",
+    "location": "https://www.gov.br/planalto/pt-br/centrais-de-conteudo/publicacoes/manual-de-redacao-da-presidencia-da-republica/manual-de-redacao-da-presidencia_3a-edicao_2018.pdf",
+    "description": "Manual de Redação da Presidência da República",
+    "metadata": {}
+  },
+  {
+    "name": "Repositório Flask",
+    "source_type": "GITHUB",
+    "location": "https://github.com/pallets/flask",
+    "description": "Repositório do framework Flask",
+    "metadata": {
+      "max_files": 20,
+      "extensions": [".py", ".md"]
+    }
+  },
+  {
+    "name": "Curso de Python",
+    "source_type": "YOUTUBE",
+    "location": "https://www.youtube.com/watch?v=rfscVS0vtbw",
+    "description": "Tutorial de Python para iniciantes",
+    "metadata": {
+      "extract_comments": false
+    }
+  }
+] 

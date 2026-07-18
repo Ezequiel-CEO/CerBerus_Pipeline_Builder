@@ -1,0 +1,1502 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+Módulo principal do agente Èter para o CerBerus FMK
+
+Este módulo implementa a classe principal EterAgent, que coordena todas as
+funcionalidades do assistente inteligente, incluindo gerenciamento de memória,
+aprendizado, processamento de linguagem natural e execução de tarefas.
+"""
+
+import os
+import json
+import logging
+import datetime
+import subprocess
+import time
+from typing import Dict, List, Optional, Any, Union, Tuple, Generator
+
+from cerberus_api.pipeline_builder.ai_manager.eter.context.memory import EterMemory
+from cerberus_api.utils.logging_config import get_logger
+
+# Importar ferramentas
+try:
+    from cerberus_api.pipeline_builder.ai_manager.eter.tools.shell import ShellCommands
+    from cerberus_api.pipeline_builder.ai_manager.eter.tools.files import FileCommands
+    TOOLS_AVAILABLE = True
+except ImportError:
+    TOOLS_AVAILABLE = False
+
+# Verificar se temos suporte a modelos GGUF
+GGUF_AVAILABLE = False
+try:
+    from cerberus_api.pipeline_builder.ai_manager.llm.gguf_manager import GGUFManager
+    GGUF_AVAILABLE = True
+except ImportError:
+    pass
+
+# Importar nossa ponte do framework
+try:
+    from cerberus_api.pipeline_builder.ai_manager.eter.core_integration import eter_bridge
+    CORE_INTEGRATION_AVAILABLE = True
+except ImportError:
+    CORE_INTEGRATION_AVAILABLE = False
+
+class EterAgent:
+    """
+    Agente inteligente do Èter, responsável por gerenciar os componentes
+    do assistente, processar entradas do usuário e coordenar a execução
+    de tarefas.
+    
+    Responsável pelo gerenciamento de:
+    - Memória e contexto
+    - Aprendizado e adaptação
+    - Processamento de linguagem natural
+    - Execução de tarefas
+    """
+    
+    def __init__(
+        self,
+        user_id: str = "default",
+        model_dir: str = None,
+        knowledge_dir: str = None,
+        workspace_dir: str = None,
+        verbose: bool = False,
+        enable_framework_bridge: bool = True,
+        **kwargs
+    ):
+        """
+        Inicializa o agente Èter.
+        
+        Args:
+            user_id: Identificador do usuário
+            model_dir: Diretório de modelos
+            knowledge_dir: Diretório de base de conhecimento
+            workspace_dir: Diretório de trabalho
+            verbose: Ativar modo verboso
+            enable_framework_bridge: Ativar integração com framework
+            **kwargs: Parâmetros adicionais
+        """
+        self.user_id = user_id
+        self.verbose = verbose
+        
+        # Configurar diretórios
+        self.model_dir = model_dir or os.environ.get('ETER_MODEL_DIR', os.path.expanduser('~/models'))
+        self.knowledge_dir = knowledge_dir or os.environ.get('ETER_KNOWLEDGE_DIR', os.path.expanduser('~/knowledge'))
+        self.workspace_dir = workspace_dir or os.environ.get('ETER_WORKSPACE_DIR', os.getcwd())
+        
+        # Configurar logging
+        self.logger = logging.getLogger(f"eter.agent.{user_id}")
+        if verbose:
+            self.logger.setLevel(logging.DEBUG)
+        else:
+            log_level = kwargs.get('log_level', 'INFO')
+            self.logger.setLevel(getattr(logging, log_level.upper()))
+            
+        self.logger.info(f"Inicializando agente Èter para usuário: {user_id}")
+        self.logger.info(f"Diretórios: modelo={self.model_dir}, conhecimento={self.knowledge_dir}, workspace={self.workspace_dir}")
+        
+        # Verificar disponibilidade de recursos
+        self.gguf_available = False
+        try:
+            from cerberus_api.pipeline_builder.ai_manager.eter.gguf_loader import GGUFModel
+            self.gguf_available = True
+            self.logger.info("Suporte a modelos GGUF disponível")
+        except ImportError:
+            self.logger.warning("Suporte a modelos GGUF não disponível")
+            
+        # Tentar importar a ponte do framework
+        CORE_INTEGRATION_AVAILABLE = False
+        try:
+            from cerberus_api.pipeline_builder.ai_manager.eter.core_integration import eter_bridge
+            CORE_INTEGRATION_AVAILABLE = True
+            self.logger.info("Integração com o framework disponível")
+        except ImportError:
+            self.logger.warning("Módulo de integração com o framework não encontrado")
+        except Exception as e:
+            self.logger.error(f"Erro ao importar ponte do framework: {e}")
+        
+        # Configurar ponte do framework
+        self.has_framework_bridge = CORE_INTEGRATION_AVAILABLE and enable_framework_bridge
+        if self.has_framework_bridge:
+            from cerberus_api.pipeline_builder.ai_manager.eter.core_integration import eter_bridge
+            self.framework = eter_bridge
+            self.logger.info(f"Ponte do framework inicializada para usuário: {user_id}")
+        else:
+            self.framework = None
+            if enable_framework_bridge:
+                self.logger.warning("Ponte do framework solicitada mas não disponível")
+            else:
+                self.logger.info("Ponte do framework desativada conforme configuração")
+        
+        # Verificar dependências opcionais
+        self.has_llm_support = False
+        
+        # Inicializar gerenciador de modelos LLM (se disponível)
+        try:
+            from cerberus_api.pipeline_builder.ai_manager.model_hub import ModelHub
+            self.llm_manager = ModelHub(models_dir=self.model_dir)
+            self.has_llm_support = True
+        except ImportError:
+            self.logger.warning("Suporte a LLM não disponível. Alguns recursos serão limitados.")
+            self.llm_manager = None
+        
+        # Componentes principais (inicializados sob demanda)
+        self.memory = None
+        self.active_model = None
+        
+        # Inicializar componentes essenciais
+        self._initialize_components()
+        
+        # Ferramentas e utilitários
+        self._initialize_tools()
+        
+    def _initialize_components(self):
+        """Inicializa os componentes principais do agente."""
+        try:
+            # Inicializar memória
+            from cerberus_api.pipeline_builder.ai_manager.eter.context.memory import EterMemory
+            self.memory = EterMemory(
+                storage_dir=self.knowledge_dir,
+                user_id=self.user_id
+            )
+            self.logger.info("Memória inicializada")
+            
+            # Verificar se temos o ModelHub disponível
+            if hasattr(self, 'llm_manager') and self.llm_manager:
+                
+                # Tentar carregar modelos GGUF padrão se disponíveis
+                try:
+                    # Verificar se temos modelos GGUF disponíveis
+                    default_models_dir = os.path.expanduser("~/.cerberusfmk/models/")
+                    
+                    self.logger.info(f"Verificando modelos em: {default_models_dir}")
+                    
+                    # Adicionar modelo Qwen2.5 se disponível
+                    model_found = False
+                    for model_name in ["Qwen2.5-7B-Instruct-1M-Q6_K.gguf", "Qwen2.5-7B-Instruct-1M-Q6_K.final.gguf"]:
+                        qwen_model_path = os.path.join(default_models_dir, model_name)
+                        if os.path.exists(qwen_model_path):
+                            try:
+                                # Extrair nome do modelo do arquivo
+                                model_name_clean = "Qwen2.5-7B-Instruct-1M-Q6_K"
+                                # Adicionar com nome e caminho separados
+                                self.llm_manager.add_model(qwen_model_path)
+                                self.logger.info(f"Modelo registrado: {model_name_clean}")
+                                # Definir como modelo ativo automaticamente
+                                self.active_model_name = model_name_clean
+                                model_found = True
+                                break
+                            except Exception as e:
+                                self.logger.warning(f"Erro ao registrar modelo '{model_name_clean}': {e}")
+                
+                    # Se encontramos o modelo, carregar
+                    if model_found:
+                        self.logger.info("Tentando definir o modelo como ativo...")
+                        try:
+                            self.set_active_model("Qwen2.5-7B-Instruct-1M-Q6_K", force_reload=True)
+                        except Exception as e:
+                            self.logger.warning(f"Erro ao definir modelo como ativo: {e}")
+                except Exception as e:
+                    self.logger.warning(f"Erro ao verificar modelos padrão: {e}")
+                
+            # Inicializar módulos de aceleração
+            try:
+                import cerberus_api.pipeline_builder.ai_manager.raw_gpu
+                self.logger.info("Módulo raw_gpu disponível para aceleração")
+            except ImportError:
+                self.logger.warning("Módulo raw_gpu não disponível")
+                
+        except Exception as e:
+            self.logger.error(f"Erro ao inicializar componentes: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+    
+    def _initialize_tools(self):
+        """Inicializa as ferramentas e utilitários do agente."""
+        # Importar ferramentas
+        try:
+            from cerberus_api.pipeline_builder.ai_manager.eter.tools.shell import ShellTools
+            from cerberus_api.pipeline_builder.ai_manager.eter.tools.files import FileTools
+            
+            # Inicializar ferramentas
+            self.shell_tools = ShellTools(self)
+            self.file_tools = FileTools(self)
+            
+            self.logger.info("Ferramentas de shell e arquivos disponíveis")
+        except ImportError:
+            self.logger.warning("Ferramentas opcionais não disponíveis")
+            self.shell_tools = None
+            self.file_tools = None
+    
+    def set_active_model(self, model_name, force_reload=False):
+        """
+        Define o modelo ativo para geração de texto.
+        
+        Args:
+            model_name: Nome do modelo a ser ativado
+            force_reload: Se True, recarrega o modelo mesmo se já estiver carregado
+            
+        Returns:
+            True se o modelo foi ativado com sucesso
+        """
+        self.logger.info(f"Configurando modelo ativo: {model_name}")
+        
+        # Verificar o diretório de modelos personalizado
+        custom_models_dir = os.path.expanduser("~/.cerberusfmk/models/")
+        
+        # Construir caminhos possíveis para o modelo
+        possible_paths = [
+            os.path.join(custom_models_dir, f"{model_name}.gguf"),
+            os.path.join(custom_models_dir, model_name),
+            os.path.join(self.model_dir, f"{model_name}.gguf"),
+            os.path.join(self.model_dir, model_name)
+        ]
+        
+        # Verificar qual caminho existe
+        model_path = None
+        for path in possible_paths:
+            if os.path.exists(path):
+                model_path = path
+                break
+        
+        if model_path is None:
+            self.logger.warning(f"Arquivo de modelo não encontrado para: {model_name}")
+            return False
+        
+        try:
+            # Verificar se temos um gerenciador de modelos
+            if not self.llm_manager:
+                self.logger.warning("Gerenciador de modelos não disponível")
+                return False
+            
+            # Verificar se o modelo já está carregado
+            if not force_reload:
+                # Verificar se temos um modelo ativo e se é o mesmo que estamos tentando definir
+                if hasattr(self, 'active_model_name') and self.active_model_name == model_name:
+                    self.logger.info(f"Modelo '{model_name}' já está ativo")
+                    return True
+            
+            # Primeiro registrar o modelo se necessário
+            # Verificar se o modelo está registrado
+            try:
+                if hasattr(self.llm_manager, 'add_model'):
+                    # Verificar quantos parâmetros aceita o método add_model
+                    import inspect
+                    try:
+                        add_model_params = inspect.signature(self.llm_manager.add_model).parameters
+                        param_count = len(add_model_params)
+                        
+                        if param_count >= 2:
+                            # API espera nome e caminho separados
+                            self.llm_manager.add_model(model_name, model_path, model_type="gguf")
+                        else:
+                            # API espera apenas o caminho
+                            self.llm_manager.add_model(model_path)
+                    except Exception:
+                        # Em caso de erro, tentar o método mais simples
+                        self.llm_manager.add_model(model_path)
+                    
+                    self.logger.info(f"Modelo registrado: {model_name}")
+            except Exception as e:
+                self.logger.warning(f"Erro ao registrar modelo '{model_name}': {e}")
+            
+            # Em seguida, carregá-lo
+            success = False
+            if hasattr(self.llm_manager, 'load_model'):
+                success = self.llm_manager.load_model(model_name)
+                
+                if success:
+                    # Armazenar nome do modelo para futuras referências
+                    self.active_model_name = model_name
+                    self.logger.info(f"Modelo '{model_name}' carregado com sucesso")
+                else:
+                    self.logger.error(f"Falha ao carregar modelo '{model_name}'")
+            else:
+                self.logger.warning("Método load_model não disponível no gerenciador de modelos")
+                return False
+            
+            return success
+        except Exception as e:
+            self.logger.error(f"Erro ao definir modelo ativo: {e}")
+            return False
+    
+    def list_available_models(self) -> List[Dict[str, Any]]:
+        """
+        Lista todos os modelos disponíveis.
+        
+        Returns:
+            Lista de dicionários com informações dos modelos
+        """
+        models = []
+        
+        try:
+            # Primeiro, verificar modelos no diretório padrão
+            home_models_dir = os.path.expanduser("~/.cerberusfmk/models/")
+            self.logger.info(f"Verificando modelos em: {home_models_dir}")
+            
+            if not os.path.exists(home_models_dir):
+                os.makedirs(home_models_dir, exist_ok=True)
+            
+            # Verificar se o ModelHub está disponível
+            if self.llm_manager is not None:
+                # Verificar se o método list_models existe no ModelHub
+                if hasattr(self.llm_manager, 'list_models'):
+                    try:
+                        # Usar o método list_models do ModelHub
+                        models = self.llm_manager.list_models()
+                        if models:
+                            return models
+                    except Exception as e:
+                        self.logger.error(f"Erro ao listar modelos via ModelHub: {str(e)}")
+                        # Continuar com a implementação de fallback
+            
+            # Fallback: listar arquivos GGUF diretamente
+            gguf_files = []
+            for root, _, files in os.walk(home_models_dir):
+                for file in files:
+                    if file.lower().endswith(".gguf"):
+                        model_path = os.path.join(root, file)
+                        
+                        # Obter informações básicas do arquivo
+                        try:
+                            size = os.path.getsize(model_path)
+                            name = os.path.splitext(file)[0]
+                            
+                            model_info = {
+                                "id": name.lower().replace(" ", "_"),
+                                "name": name,
+                                "path": model_path,
+                                "size": size,
+                                "size_gb": size / (1024**3)
+                            }
+                            
+                            gguf_files.append(model_info)
+                        except OSError:
+                            # Ignorar arquivos com problemas
+                            continue
+            
+            # Ordenar por tamanho (maior primeiro)
+            models = sorted(gguf_files, key=lambda x: x.get("size", 0), reverse=True)
+            
+            # Registrar modelos no ModelHub se disponível
+            if self.llm_manager is not None and hasattr(self.llm_manager, 'add_model'):
+                for model in models:
+                    if model.get("path"):
+                        try:
+                            self.llm_manager.add_model(model["path"])
+                        except Exception as e:
+                            self.logger.warning(f"Erro ao registrar modelo '{model['name']}': {str(e)}")
+                            
+        except Exception as e:
+            self.logger.error(f"Erro ao listar modelos: {str(e)}")
+        
+        return models
+    
+    def _generate_response(
+        self, 
+        prompt: str,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+        streaming: bool = False
+    ) -> Union[str, Generator[str, None, None]]:
+        """
+        Gera uma resposta utilizando o modelo ativo.
+        
+        Args:
+            prompt: Texto para o modelo responder
+            max_tokens: Número máximo de tokens na resposta
+            temperature: Temperatura para sampling (maior = mais aleatório)
+            streaming: Se True, retorna um gerador com chunks da resposta
+            
+        Returns:
+            Texto da resposta ou gerador de chunks
+        """
+        # Verificar se temos acesso a modelos LLM
+        if self.active_model is None:
+            # Resposta de fallback quando não há modelo disponível
+            fallback = "Não foi possível processar sua solicitação com um modelo avançado."
+            if streaming:
+                return (chunk for chunk in [fallback])
+            return fallback
+        
+        # Preparar o prompt com histórico de conversa
+        conversation_history = self.memory.get_conversation_history(limit=5)
+        
+        # Formatar histórico para o prompt
+        formatted_history = ""
+        for entry in conversation_history:
+            role = entry.get("role", "")
+            content = entry.get("content", "")
+            
+            if role == "user":
+                formatted_history += f"Usuário: {content}\n"
+            elif role == "assistant":
+                formatted_history += f"Èter: {content}\n"
+        
+        # Adicionar sistema de personalidade e contexto
+        system_prompt = """Você é Èter, um assistente de IA avançado projetado para gerenciar o framework CerBerus.
+Você deve ser direto, profissional e útil. 
+Responda sempre em português brasileiro.
+Você foi criado para ajudar com gerenciamento de modelos de IA, processamento de dados e análise de informações.
+Use sua vasta base de conhecimento para auxiliar o usuário da melhor forma possível.
+"""
+
+        # Estruturar o prompt completo
+        full_prompt = f"{system_prompt}\n\nHistórico de conversa:\n{formatted_history}\n\nUsuário: {prompt}\n\nÈter:"
+        
+        try:
+            # Gerar resposta usando o modelo
+            return self.active_model.generate(
+                prompt=full_prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                streaming=streaming
+            )
+        except Exception as e:
+            # Em caso de erro, fornecer uma resposta alternativa
+            error_msg = f"Desculpe, ocorreu um erro ao processar sua solicitação: {str(e)}"
+            if streaming:
+                return (chunk for chunk in [error_msg])
+            return error_msg
+    
+    def process_input(self, user_input, use_simulated=None):
+        """
+        Processa a entrada do usuário e retorna uma resposta.
+        
+        Args:
+            user_input (str): A entrada do usuário para processar
+            use_simulated (bool, opcional): Se deve usar modo simulado, independente do estado do modelo
+            
+        Returns:
+            str: A resposta gerada
+        """
+        self._logger.info(f"Processando entrada: {user_input[:20]}...")
+        
+        # Decidir se usamos modo simulado
+        should_simulate = use_simulated if use_simulated is not None else not self.is_model_active()
+        
+        if not should_simulate:
+            try:
+                # Usar o modelo ativo para gerar uma resposta
+                self._logger.info(f"Usando modelo ativo: {self._active_model}")
+                
+                if hasattr(self._model_hub, 'generate_text'):
+                    response = self._model_hub.generate_text(
+                        self._active_model,
+                        f"Usuário: {user_input}
+
+Ajudante:",
+                        max_tokens=1024,
+                        temperature=0.7,
+                        top_p=0.95
+                    )
+                    return response
+                else:
+                    should_simulate = True  # Fallback para simulação
+                    self._logger.warning("ModelHub não tem método generate_text, usando simulação")
+            except Exception as e:
+                should_simulate = True  # Fallback para simulação em caso de erro
+                self._logger.error(f"Erro ao gerar resposta com modelo: {e}")
+        
+        if should_simulate:
+            # Modo simulado quando não há modelo disponível
+            return f"[SIMULAÇÃO] Resposta para: Usuário: {user_input}
+
+Ajudante:"
+    def _generate_fallback_response(self, user_input: str) -> str:
+        """
+        Gera uma resposta de fallback quando o LLM não está disponível.
+        
+        Args:
+            user_input: Texto de entrada do usuário
+            
+        Returns:
+            Resposta de fallback
+        """
+        # Respostas simples baseadas em palavras-chave
+        lower_input = user_input.lower()
+        
+        if 'olá' in lower_input or 'oi' in lower_input or 'ola' in lower_input:
+            return "Olá! Como posso ajudar você hoje?"
+        
+        if 'ajuda' in lower_input:
+            return "Estou aqui para ajudar. O que você precisa saber sobre o CerBerus FMK?"
+        
+        if 'quem' in lower_input and ('você' in lower_input or 'voce' in lower_input):
+            return "Eu sou Èter, o assistente do CerBerus FMK, projetado para ajudar com várias tarefas de processamento de linguagem natural, análise de dados e automação."
+        
+        # Resposta genérica
+        return f"Entendi sua consulta. Você está perguntando sobre '{user_input}'. Posso ajudar fornecendo mais informações se você detalhar melhor sua pergunta."
+    
+    def execute_task(self, task_description: str) -> Dict[str, Any]:
+        """
+        Executa uma tarefa descrita em linguagem natural.
+        
+        Args:
+            task_description: Descrição da tarefa a ser executada
+            
+        Returns:
+            Dicionário com resultados da execução
+        """
+        self.logger.info(f"Tentando executar tarefa: {task_description}")
+        
+        # Verificar se é uma tarefa relacionada a modelos
+        if any(keyword in task_description.lower() for keyword in 
+               ["modelo", "modelos", "llm", "carregar", "ativar", "qwen"]):
+            
+            # Listar modelos disponíveis
+            if any(keyword in task_description.lower() for keyword in 
+                 ["listar", "mostrar", "disponíveis"]):
+                
+                if self.llm_manager is not None:
+                    models = self.llm_manager.list_models()
+                    if models:
+                        model_list = "\n".join([f"- {m['name']} ({m['size_gb']:.1f}GB)" 
+                                              for m in models])
+                        return {
+                            "status": "success",
+                            "message": f"Modelos disponíveis:\n{model_list}",
+                            "data": models
+                        }
+                    else:
+                        return {
+                            "status": "warning",
+                            "message": "Nenhum modelo disponível no diretório de modelos.",
+                            "data": []
+                        }
+                else:
+                    return {
+                        "status": "error",
+                        "message": "Gerenciador de modelos não disponível.",
+                        "data": None
+                    }
+            
+            # Ativar um modelo específico
+            elif any(keyword in task_description.lower() for keyword in 
+                   ["ativar", "carregar", "usar"]):
+                
+                # Identificar nome do modelo na descrição
+                words = task_description.lower().split()
+                available_models = []
+                
+                if self.llm_manager is not None:
+                    available_models = [m["name"].lower() for m in self.llm_manager.list_models()]
+                
+                # Procurar por nomes de modelos conhecidos na descrição
+                target_model = None
+                for model_name in available_models:
+                    if model_name in task_description.lower():
+                        target_model = model_name
+                        break
+                
+                if target_model:
+                    # Ativar o modelo encontrado
+                    success = self.set_active_model(target_model)
+                    if success:
+                        return {
+                            "status": "success",
+                            "message": f"Modelo '{target_model}' ativado com sucesso.",
+                            "data": {"model": target_model}
+                        }
+                    else:
+                        return {
+                            "status": "error",
+                            "message": f"Falha ao ativar o modelo '{target_model}'.",
+                            "data": None
+                        }
+                else:
+                    return {
+                        "status": "error",
+                        "message": "Não foi possível identificar qual modelo ativar. Por favor, especifique o nome do modelo.",
+                        "data": None
+                    }
+        
+        # Verificar se é um comando de sistema
+        elif any(keyword in task_description.lower() for keyword in 
+                ["executar", "rodar", "comando", "terminal", "shell", "bash"]):
+            
+            # Tentar extrair o comando a ser executado
+            command = None
+            
+            # Procurar por padrões comuns em comandos
+            if "comando " in task_description.lower():
+                # Extrair o que vem após "comando "
+                parts = task_description.lower().split("comando ", 1)
+                if len(parts) > 1:
+                    command = parts[1].strip()
+            
+            # Se não conseguiu extrair o comando, usar a entrada completa
+            if not command:
+                command = task_description
+            
+            # Executar o comando
+            return self.execute_shell_command(command)
+            
+        # Verificar se é uma operação de arquivo
+        elif any(keyword in task_description.lower() for keyword in 
+                ["arquivo", "diretório", "pasta", "ler", "escrever", "editar", "criar", "deletar"]):
+            
+            # Implementar manipulação de arquivos
+            if "ler" in task_description.lower() or "mostrar" in task_description.lower():
+                # Tentar extrair o caminho do arquivo
+                file_path = self._extract_file_path(task_description)
+                if file_path:
+                    return self.read_file(file_path)
+                else:
+                    return {
+                        "status": "error",
+                        "message": "Não foi possível identificar qual arquivo ler. Por favor, especifique o caminho do arquivo.",
+                        "data": None
+                    }
+            
+            elif "criar" in task_description.lower() or "escrever" in task_description.lower():
+                # Implementação para criar/escrever arquivos será adicionada em breve
+                return {
+                    "status": "not_implemented",
+                    "message": "A criação/escrita de arquivos ainda não está implementada",
+                    "task": task_description
+                }
+                
+            elif "editar" in task_description.lower():
+                # Implementação para editar arquivos será adicionada em breve
+                return {
+                    "status": "not_implemented",
+                    "message": "A edição de arquivos ainda não está implementada",
+                    "task": task_description
+                }
+                
+            elif "deletar" in task_description.lower() or "remover" in task_description.lower():
+                # Implementação para deletar arquivos será adicionada em breve
+                return {
+                    "status": "not_implemented",
+                    "message": "A remoção de arquivos ainda não está implementada",
+                    "task": task_description
+                }
+        
+        # Caso não seja uma tarefa reconhecida
+        results = {
+            "status": "not_implemented",
+            "message": "A execução desta tarefa ainda não está implementada",
+            "task": task_description
+        }
+        
+        return results
+    
+    def execute_shell_command(self, command: str) -> Dict[str, Any]:
+        """
+        Executa um comando no shell do sistema.
+        
+        Args:
+            command: Comando a ser executado
+            
+        Returns:
+            Dicionário com resultados da execução
+        """
+        import subprocess
+        import time
+        
+        if not command or not command.strip():
+            return {
+                'success': False,
+                'error': 'Comando vazio',
+                'elapsed_time': 0,
+                'stdout': '',
+                'stderr': 'Comando vazio'
+            }
+        
+        # Lista de comandos potencialmente perigosos ou destrutivos
+        dangerous_commands = ['rm -rf /', 'mkfs', 'dd if=/dev/zero', ':(){:|:&};:']
+        
+        # Verificar se o comando contém operações potencialmente perigosas
+        for dangerous in dangerous_commands:
+            if dangerous in command:
+                return {
+                    'success': False,
+                    'error': 'Comando potencialmente perigoso rejeitado por segurança',
+                    'elapsed_time': 0,
+                    'stdout': '',
+                    'stderr': 'Comando rejeitado: pode causar danos ao sistema'
+                }
+        
+        self.logger.info(f"Executando comando: {command}")
+        
+        start_time = time.time()
+        
+        try:
+            # Executar o comando capturando saída
+            process = subprocess.Popen(
+                command,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            # Obter saídas
+            stdout, stderr = process.communicate()
+            
+            elapsed_time = time.time() - start_time
+            
+            success = process.returncode == 0
+            error_msg = None if success else f"Comando retornou código de erro: {process.returncode}"
+            
+            result = {
+                'success': success,
+                'error': error_msg,
+                'returncode': process.returncode,
+                'elapsed_time': elapsed_time,
+                'stdout': stdout,
+                'stderr': stderr
+            }
+            
+            self.logger.info(f"Comando concluído em {elapsed_time:.2f}s com código: {process.returncode}")
+            return result
+            
+        except Exception as e:
+            elapsed_time = time.time() - start_time
+            self.logger.error(f"Erro ao executar comando: {e}")
+            
+            return {
+                'success': False,
+                'error': str(e),
+                'elapsed_time': elapsed_time,
+                'stdout': '',
+                'stderr': f"Exceção: {str(e)}"
+            }
+    
+    def read_file(self, file_path: str) -> Dict[str, Any]:
+        """
+        Lê o conteúdo de um arquivo.
+        
+        Args:
+            file_path: Caminho do arquivo a ser lido
+            
+        Returns:
+            Dicionário com o conteúdo do arquivo
+        """
+        self.logger.info(f"Lendo arquivo: {file_path}")
+        
+        # Normalizar o caminho do arquivo
+        if not os.path.isabs(file_path):
+            file_path = os.path.join(self.workspace_dir, file_path)
+        
+        try:
+            if not self.has_tools:
+                # Método nativo
+                if not os.path.exists(file_path):
+                    return {
+                        "status": "error",
+                        "message": f"Arquivo não encontrado: {file_path}",
+                        "data": None
+                    }
+                    
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    
+                return {
+                    "status": "success",
+                    "message": f"Arquivo lido com sucesso: {file_path}",
+                    "data": {
+                        "content": content,
+                        "file_path": file_path
+                    }
+                }
+            else:
+                # Usar a ferramenta FileCommands
+                result = FileCommands.read_file(file_path)
+                
+                # Converter para o formato padrão de resposta
+                if result["success"]:
+                    return {
+                        "status": "success",
+                        "message": f"Arquivo lido com sucesso: {file_path}",
+                        "data": {
+                            "content": result["content"],
+                            "file_path": result["file_path"],
+                            "size": result.get("size", 0)
+                        }
+                    }
+                else:
+                    return {
+                        "status": "error",
+                        "message": result.get("message", f"Erro ao ler arquivo: {file_path}"),
+                        "data": None
+                    }
+            
+        except Exception as e:
+            self.logger.error(f"Erro ao ler arquivo: {e}")
+            return {
+                "status": "error",
+                "message": f"Erro ao ler arquivo: {str(e)}",
+                "data": None
+            }
+    
+    def write_file(self, file_path: str, content: str, append: bool = False) -> Dict[str, Any]:
+        """
+        Escreve conteúdo em um arquivo.
+        
+        Args:
+            file_path: Caminho do arquivo a ser escrito
+            content: Conteúdo a ser escrito
+            append: Se True, adiciona ao final do arquivo existente
+            
+        Returns:
+            Dicionário com o resultado da operação
+        """
+        self.logger.info(f"Escrevendo em arquivo: {file_path} (append={append})")
+        
+        # Normalizar o caminho do arquivo
+        if not os.path.isabs(file_path):
+            file_path = os.path.join(self.workspace_dir, file_path)
+        
+        try:
+            if not self.has_tools:
+                # Método nativo
+                # Garantir que o diretório exista
+                os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
+                
+                # Abrir arquivo no modo apropriado
+                mode = 'a' if append else 'w'
+                with open(file_path, mode, encoding='utf-8') as f:
+                    f.write(content)
+                    
+                return {
+                    "status": "success",
+                    "message": f"Arquivo {'atualizado' if append else 'escrito'} com sucesso: {file_path}",
+                    "data": {
+                        "file_path": file_path
+                    }
+                }
+            else:
+                # Usar a ferramenta FileCommands
+                result = FileCommands.write_file(
+                    file_path=file_path,
+                    content=content,
+                    append=append,
+                    make_dirs=True
+                )
+                
+                # Converter para o formato padrão de resposta
+                if result["success"]:
+                    return {
+                        "status": "success",
+                        "message": f"Arquivo {'atualizado' if append else 'escrito'} com sucesso: {file_path}",
+                        "data": {
+                            "file_path": result["file_path"],
+                            "size": result.get("size", 0)
+                        }
+                    }
+                else:
+                    return {
+                        "status": "error",
+                        "message": result.get("message", f"Erro ao escrever arquivo: {file_path}"),
+                        "data": None
+                    }
+            
+        except Exception as e:
+            self.logger.error(f"Erro ao escrever arquivo: {e}")
+            return {
+                "status": "error",
+                "message": f"Erro ao escrever arquivo: {str(e)}",
+                "data": None
+            }
+    
+    def delete_file(self, file_path: str) -> Dict[str, Any]:
+        """
+        Remove um arquivo do sistema.
+        
+        Args:
+            file_path: Caminho do arquivo a ser removido
+            
+        Returns:
+            Dicionário com o resultado da operação
+        """
+        self.logger.info(f"Removendo arquivo: {file_path}")
+        
+        # Normalizar o caminho do arquivo
+        if not os.path.isabs(file_path):
+            file_path = os.path.join(self.workspace_dir, file_path)
+        
+        try:
+            if not self.has_tools:
+                # Método nativo
+                if not os.path.exists(file_path):
+                    return {
+                        "status": "error",
+                        "message": f"Arquivo não encontrado: {file_path}",
+                        "data": None
+                    }
+                    
+                # Verificar se é um arquivo
+                if not os.path.isfile(file_path):
+                    return {
+                        "status": "error",
+                        "message": f"O caminho não é um arquivo: {file_path}",
+                        "data": None
+                    }
+                    
+                # Remover o arquivo
+                os.remove(file_path)
+                
+                return {
+                    "status": "success",
+                    "message": f"Arquivo removido com sucesso: {file_path}",
+                    "data": {
+                        "file_path": file_path
+                    }
+                }
+            else:
+                # Usar a ferramenta FileCommands
+                result = FileCommands.delete_file(file_path)
+                
+                # Converter para o formato padrão de resposta
+                if result["success"]:
+                    return {
+                        "status": "success",
+                        "message": result.get("message", f"Arquivo removido com sucesso: {file_path}"),
+                        "data": {
+                            "file_path": file_path,
+                            "file_info": result.get("file_info", {})
+                        }
+                    }
+                else:
+                    return {
+                        "status": "error",
+                        "message": result.get("message", f"Erro ao remover arquivo: {file_path}"),
+                        "data": None
+                    }
+            
+        except Exception as e:
+            self.logger.error(f"Erro ao remover arquivo: {e}")
+            return {
+                "status": "error",
+                "message": f"Erro ao remover arquivo: {str(e)}",
+                "data": None
+            }
+    
+    def list_directory(self, dir_path: str = ".") -> Dict[str, Any]:
+        """
+        Lista o conteúdo de um diretório.
+        
+        Args:
+            dir_path: Caminho do diretório a ser listado
+            
+        Returns:
+            Dicionário com a listagem do diretório
+        """
+        self.logger.info(f"Listando diretório: {dir_path}")
+        
+        # Normalizar o caminho do diretório
+        if not os.path.isabs(dir_path):
+            dir_path = os.path.join(self.workspace_dir, dir_path)
+        
+        try:
+            if not self.has_tools:
+                # Método nativo
+                if not os.path.exists(dir_path):
+                    return {
+                        "status": "error",
+                        "message": f"Diretório não encontrado: {dir_path}",
+                        "data": None
+                    }
+                    
+                # Verificar se é um diretório
+                if not os.path.isdir(dir_path):
+                    return {
+                        "status": "error",
+                        "message": f"O caminho não é um diretório: {dir_path}",
+                        "data": None
+                    }
+                    
+                # Listar o conteúdo do diretório
+                items = os.listdir(dir_path)
+                
+                # Classificar em arquivos e diretórios
+                files = []
+                directories = []
+                
+                for item in items:
+                    item_path = os.path.join(dir_path, item)
+                    if os.path.isdir(item_path):
+                        directories.append(item)
+                    else:
+                        files.append(item)
+                
+                return {
+                    "status": "success",
+                    "message": f"Diretório listado com sucesso: {dir_path}",
+                    "data": {
+                        "directory": dir_path,
+                        "files": files,
+                        "directories": directories,
+                        "all_items": items
+                    }
+                }
+            else:
+                # Usar a ferramenta FileCommands
+                result = FileCommands.list_directory(dir_path)
+                
+                # Converter para o formato padrão de resposta
+                if result["success"]:
+                    # Extrair apenas os nomes dos arquivos/diretórios para compatibilidade
+                    files = [item["name"] for item in result.get("files", [])]
+                    directories = [item["name"] for item in result.get("directories", [])]
+                    
+                    return {
+                        "status": "success",
+                        "message": f"Diretório listado com sucesso: {dir_path}",
+                        "data": {
+                            "directory": result.get("directory", dir_path),
+                            "files": files,
+                            "directories": directories,
+                            "all_items": files + directories,
+                            "details": {
+                                "files": result.get("files", []),
+                                "directories": result.get("directories", [])
+                            }
+                        }
+                    }
+                else:
+                    return {
+                        "status": "error",
+                        "message": result.get("message", f"Erro ao listar diretório: {dir_path}"),
+                        "data": None
+                    }
+            
+        except Exception as e:
+            self.logger.error(f"Erro ao listar diretório: {e}")
+            return {
+                "status": "error",
+                "message": f"Erro ao listar diretório: {str(e)}",
+                "data": None
+            }
+    
+    def _extract_file_path(self, text: str) -> Optional[str]:
+        """
+        Extrai o caminho de um arquivo a partir de um texto.
+        
+        Args:
+            text: Texto a ser analisado
+            
+        Returns:
+            Caminho do arquivo ou None se não encontrado
+        """
+        # Procurar por caminhos entre aspas
+        import re
+        path_matches = re.findall(r'[\'\"]([^\'"]+)[\'\"]', text)
+        
+        if path_matches:
+            # Retornar o primeiro caminho encontrado
+            return path_matches[0]
+            
+        # Procurar por palavras que parecem ser caminhos
+        words = text.split()
+        for word in words:
+            if '/' in word or '\\' in word or word.endswith('.py') or word.endswith('.txt'):
+                return word
+                
+        return None
+    
+    def learn_from_observation(self, context: Dict[str, Any], result: Dict[str, Any]) -> None:
+        """
+        Aprende a partir da observação de uma ação e seu resultado.
+        
+        Args:
+            context: Contexto da ação observada
+            result: Resultado da ação
+        """
+        # TODO: Implementar aprendizado por observação
+        self.logger.debug(f"Aprendendo com observação: {context}")
+        
+        # Armazenar na memória de conhecimento
+        knowledge_entry = {
+            "type": "observation",
+            "timestamp": datetime.datetime.now().isoformat(),
+            "context": context,
+            "result": result
+        }
+        
+        # Gerar chave única para a observação
+        key = f"obs_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
+        
+        # Armazenar usando o método store_knowledge com os parâmetros corretos
+        self.memory.store_knowledge(
+            key=key,
+            content=json.dumps(knowledge_entry),
+            metadata={"type": "observation"}
+        )
+    
+    def save_state(self) -> None:
+        """Salva o estado atual do agente."""
+        # Salvar memória e outros estados
+        # TODO: Implementar persistência de estado
+        self.logger.info("Estado do agente salvo")
+    
+    def load_state(self) -> None:
+        """Carrega o estado salvo do agente."""
+        # Carregar memória e outros estados
+        # TODO: Implementar carregamento de estado
+        self.logger.info("Estado do agente carregado")
+
+    def __str__(self) -> str:
+        """Representação em string do agente."""
+        return f"Èter(user={self.user_id}, workspace={self.workspace_dir})"
+
+    # Métodos para integração com o Framework CerBerusFMK via ponte
+    
+    def get_framework_component(self, component_path: str) -> Any:
+        """
+        Obtém um componente do framework pelo seu caminho.
+        
+        Args:
+            component_path: Caminho do componente (módulo, classe ou função)
+            
+        Returns:
+            Componente solicitado ou None se não disponível
+        """
+        if not self.has_framework_bridge:
+            self.logger.error("Ponte do framework não disponível")
+            return None
+            
+        try:
+            component = self.framework.registry.get_component(component_path)
+            return component
+        except Exception as e:
+            self.logger.error(f"Erro ao obter componente '{component_path}': {e}")
+            return None
+    
+    def create_component_instance(self, class_path: str, *args, **kwargs) -> Any:
+        """
+        Cria uma instância de um componente do framework.
+        
+        Args:
+            class_path: Caminho para a classe
+            *args: Argumentos posicionais
+            **kwargs: Argumentos nomeados
+            
+        Returns:
+            Instância criada ou None se falhar
+        """
+        if not self.has_framework_bridge:
+            self.logger.error("Ponte do framework não disponível")
+            return None
+            
+        try:
+            instance = self.framework.registry.create_instance(class_path, *args, **kwargs)
+            return instance
+        except Exception as e:
+            self.logger.error(f"Erro ao criar instância de '{class_path}': {e}")
+            return None
+    
+    def execute_pipeline_task(self, task_type: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Executa uma tarefa do pipeline com os parâmetros fornecidos.
+        
+        Args:
+            task_type: Tipo de tarefa (collect, analyze, process)
+            params: Parâmetros para a tarefa
+            
+        Returns:
+            Resultado da tarefa
+        """
+        if not self.has_framework_bridge:
+            self.logger.error("Ponte do framework não disponível")
+            return {"status": "error", "message": "Ponte do framework não disponível"}
+        
+        try:
+            # Obter o PipelineBuilder
+            builder = self.framework.get_pipeline_builder()
+            if not builder:
+                return {"status": "error", "message": "PipelineBuilder não disponível"}
+            
+            # Executar tarefa conforme o tipo
+            if task_type == "collect":
+                sources = params.get("sources", [])
+                results = builder.collect_content(sources)
+                return {
+                    "status": "success",
+                    "message": f"{len(results)} fontes coletadas",
+                    "data": results
+                }
+                
+            elif task_type == "analyze":
+                chunks = params.get("chunks", [])
+                streaming = params.get("streaming", False)
+                results = self.framework.analyze_content(chunks, streaming=streaming)
+                
+                # Verificar se temos resultados ou não
+                if results is None:
+                    return {
+                        "status": "error",
+                        "message": "Falha na análise de conteúdo",
+                        "data": None
+                    }
+                
+                return {
+                    "status": "success",
+                    "message": f"{len(results)} chunks analisados",
+                    "data": results
+                }
+                
+            elif task_type == "create_pipeline":
+                name = params.get("name", f"pipeline_{int(time.time())}")
+                description = params.get("description", "")
+                sources = params.get("sources", [])
+                pipeline = self.framework.create_pipeline(sources, name, description)
+                return {
+                    "status": "success" if pipeline else "error",
+                    "message": f"Pipeline {name} criado" if pipeline else "Falha ao criar pipeline",
+                    "data": pipeline
+                }
+                
+            else:
+                return {
+                    "status": "error",
+                    "message": f"Tipo de tarefa desconhecido: {task_type}"
+                }
+                
+        except Exception as e:
+            self.logger.error(f"Erro ao executar tarefa '{task_type}': {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            return {
+                "status": "error",
+                "message": f"Erro ao executar tarefa: {str(e)}"
+            }
+    
+    def discover_framework_capabilities(self) -> Dict[str, List[str]]:
+        """
+        Descobre as capacidades disponíveis no framework.
+        
+        Returns:
+            Dicionário com listas de módulos, classes e funções
+        """
+        if not self.has_framework_bridge:
+            self.logger.error("Ponte do framework não disponível")
+            return {}
+            
+        return self.framework.list_available_components()
+    
+    def execute_framework_command(self, command: str) -> Dict[str, Any]:
+        """
+        Executa um comando no sistema operacional através do framework.
+        
+        Args:
+            command: Comando a ser executado
+            
+        Returns:
+            Resultado da execução
+        """
+        if not self.has_framework_bridge:
+            self.logger.error("Ponte do framework não disponível")
+            return {"status": "error", "message": "Ponte do framework não disponível"}
+            
+        return self.framework.execute_command(command)
+        
+    def process_user_command(self, command_text: str) -> Dict[str, Any]:
+        """
+        Processa um comando em linguagem natural do usuário e o executa.
+        
+        Esta função permite que o Èter interprete comandos em linguagem natural
+        e os execute através do framework ou diretamente.
+        
+        Args:
+            command_text: Texto do comando em linguagem natural
+            
+        Returns:
+            Resultado do processamento do comando
+        """
+        self.logger.info(f"Processando comando: {command_text}")
+        
+        # Registrar no histórico
+        if hasattr(self, 'memory') and self.memory:
+            self.memory.add_conversation("user", command_text)
+        
+        # Verificar se temos um modelo GGUF disponível para processar o comando
+        has_gguf_model = False
+        if self.gguf_available:
+            try:
+                if not hasattr(self, 'gguf_manager') or not self.gguf_manager:
+                    from cerberus_api.pipeline_builder.ai_manager.eter.gguf_loader import GGUFManager
+                    # Inicializar um gerenciador GGUF para interpretar comandos
+                    self.gguf_manager = GGUFManager(model_dir=self.model_dir)
+                    
+                # Verificar se temos algum modelo carregado
+                has_gguf_model = self.gguf_manager.has_models()
+            except Exception as e:
+                self.logger.error(f"Erro ao verificar modelos GGUF: {e}")
+                
+        # Se tivermos um modelo GGUF, deixe-o procurar o comando primeiro
+        command_result = None
+        if has_gguf_model:
+            try:
+                # Criar um prompt para o modelo compreender o comando
+                framework_capabilities = "desconhecido"
+                if self.has_framework_bridge:
+                    caps = self.discover_framework_capabilities()
+                    framework_capabilities = ", ".join(
+                        [f"{k}: {len(v)} itens" for k, v in caps.items()]
+                    )
+                
+                system_prompt = f"""Você é Èter, o agente central do Framework CerBerusFMK.
+Você deve analisar o comando do usuário e determinar a ação a ser executada.
+Disponível: {framework_capabilities}
+"""
+                # Gerar a interpretação do comando
+                command_interpretation = self.gguf_manager.generate_text(
+                    system_prompt=system_prompt,
+                    prompt=f"Comando: {command_text}\n\nAnalise e extraia o tipo de ação (collect, analyze, pipeline, system, query) e os parâmetros relevantes no formato JSON.",
+                    max_tokens=1024
+                )
+                
+                self.logger.debug(f"Interpretação do comando: {command_interpretation}")
+                
+                # Tentar extrair um comando estruturado da interpretação
+                try:
+                    import json
+                    import re
+                    
+                    # Procurar por um bloco JSON na resposta
+                    json_match = re.search(r'\{.*\}', command_interpretation, re.DOTALL)
+                    if json_match:
+                        cmd_data = json.loads(json_match.group(0))
+                        action_type = cmd_data.get("action_type", "")
+                        params = cmd_data.get("params", {})
+                        
+                        # Executar o comando conforme o tipo
+                        if action_type in ["collect", "analyze", "create_pipeline"]:
+                            command_result = self.execute_pipeline_task(action_type, params)
+                        elif action_type == "system":
+                            if "command" in params:
+                                command_result = self.execute_framework_command(params["command"])
+                        elif action_type == "query":
+                            # Responder a uma consulta sobre o framework
+                            command_result = {
+                                "status": "success",
+                                "message": "Informação obtida",
+                                "data": f"Capacidades do framework: {framework_capabilities}"
+                            }
+                except Exception as e:
+                    self.logger.error(f"Erro ao processar interpretação do comando: {e}")
+            except Exception as e:
+                self.logger.error(f"Erro ao usar modelo GGUF para interpretação: {e}")
+        
+        # Se ainda não temos um resultado (seja porque não temos modelo GGUF ou falhou)
+        if not command_result:
+            # Tentar processar com regras simples baseadas em palavras-chave
+            command_lower = command_text.lower()
+            
+            if self.has_framework_bridge:
+                if any(word in command_lower for word in ["coletar", "extrair", "importar"]):
+                    # Comando de coleta básico
+                    sources = []
+                    if "http" in command_lower:
+                        # Extrair URLs do comando
+                        import re
+                        urls = re.findall(r'https?://[^\s]+', command_text)
+                        sources = urls
+                    
+                    command_result = self.execute_pipeline_task("collect", {"sources": sources})
+                    
+                elif any(word in command_lower for word in ["analisar", "processar", "entender"]):
+                    # Comando de análise básico - considera o próprio texto como conteúdo a analisar
+                    chunks = [command_text.replace("analisar", "").replace("processar", "").strip()]
+                    command_result = self.execute_pipeline_task("analyze", {"chunks": chunks})
+                    
+                elif any(word in command_lower for word in ["pipeline", "fluxo", "criar"]):
+                    # Comando para criar pipeline básico
+                    name = f"pipeline_auto_{int(time.time())}"
+                    command_result = self.execute_pipeline_task("create_pipeline", {"name": name})
+                    
+                elif any(word in command_lower for word in ["executar", "rodar", "comando"]):
+                    # Extrai um possível comando do sistema - cuidado com segurança aqui
+                    # Simplificado para exemplo, em produção seria mais complexo e seguro
+                    import re
+                    cmd_match = re.search(r'`(.*?)`', command_text)
+                    if cmd_match:
+                        command_result = self.execute_framework_command(cmd_match.group(1))
+                    else:
+                        command_result = {
+                            "status": "error", 
+                            "message": "Comando não especificado claramente entre acentos graves (`comando`)"
+                        }
+                        
+                else:
+                    # Comando desconhecido
+                    capabilities = self.discover_framework_capabilities()
+                    command_result = {
+                        "status": "info",
+                        "message": "Comando não reconhecido",
+                        "data": {
+                            "capabilities": capabilities,
+                            "help": "Comandos disponíveis: coletar, analisar, pipeline, executar"
+                        }
+                    }
+            else:
+                command_result = {
+                    "status": "error",
+                    "message": "Ponte do framework não disponível e não foi possível interpretar o comando"
+                }
+        
+        # Registrar a resposta no histórico
+        if hasattr(self, 'memory') and self.memory:
+            result_text = f"{command_result.get('status', 'unknown')}: {command_result.get('message', '')}"
+            self.memory.add_conversation("system", result_text)
+            
+        return command_result
+
+    def is_model_active(self) -> bool:
+        """
+        Verifica se há um modelo ativo e carregado.
+        
+        Returns:
+            bool: True se há um modelo ativo e carregado, False caso contrário.
+        """
+        if not self.llm_manager:
+            return False
+        
+        # Verificar se há um modelo ativo
+        if not hasattr(self.llm_manager, 'active_model') or not self.llm_manager.active_model:
+            return False
+        
+        # Verificar se o modelo está carregado
+        if hasattr(self.llm_manager, 'is_model_loaded'):
+            return self.llm_manager.is_model_loaded(self.llm_manager.active_model)
+        
+        # Se não conseguir verificar diretamente, assumir que se tem um active_model, está carregado
+        return True 
+
+    def __del__(self):
+        """
+        Método destrutor com limpeza segura de recursos CUDA.
+        """
+        try:
+            # Liberar explicitamente recursos do modelo ativo
+            if hasattr(self, '_active_model') and self._active_model:
+                try:
+                    if hasattr(self._model_hub, 'unload_model'):
+                        self._model_hub.unload_model(self._active_model)
+                    self._active_model = None
+                except Exception as e:
+                    print(f"Aviso: Erro ao descarregar modelo: {e}")
+            
+            # Limpar recursos CUDA explicitamente
+            try:
+                import gc
+                gc.collect()
+                
+                # Descarregar módulos CUDA
+                for name in list(sys.modules.keys()):
+                    if "cuda" in name.lower() or "gpu" in name.lower() or "llama" in name.lower():
+                        if name in sys.modules:
+                            try:
+                                del sys.modules[name]
+                            except:
+                                pass
+            except Exception as e:
+                print(f"Aviso: Erro na limpeza de módulos CUDA: {e}")
+                
+        except Exception as e:
+            print(f"Aviso: Erro no destrutor do EterAgent: {e}")

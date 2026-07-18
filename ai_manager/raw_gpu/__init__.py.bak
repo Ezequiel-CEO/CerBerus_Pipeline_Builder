@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+raw_gpu: Implementação de aceleração GPU/CPU para CerBerusFMK.
+
+Este módulo fornece infraestrutura para aceleração de modelos de IA
+usando GPU ou CPU, sem dependências de frameworks externos ou com
+integração com implementações existentes.
+"""
+
+import os
+import sys
+import logging
+from typing import Optional, Dict, Any, List
+
+from cerberus_api.utils.logging_config import get_logger
+
+logger = get_logger("raw_gpu")
+
+# Importar componentes principais
+from cerberus_api.pipeline_builder.ai_manager.raw_gpu.gpu_manager import GPUManager
+from cerberus_api.pipeline_builder.ai_manager.raw_gpu.cuda_kernels import CUDAKernels
+
+# Tentar importar ModelEngine (pode falhar se dependências não estiverem disponíveis)
+try:
+    from cerberus_api.pipeline_builder.ai_manager.raw_gpu.model_engine import ModelEngine, NATIVE_GGUF_AVAILABLE, GGUF_SOURCE
+except ImportError as e:
+    logger.warning(f"ModelEngine não disponível: {e}")
+    ModelEngine = None
+    NATIVE_GGUF_AVAILABLE = False
+    GGUF_SOURCE = None
+
+# Tentar importar HardwareAbstraction
+try:
+    from cerberus_api.pipeline_builder.ai_manager.raw_gpu.hardware_abstraction import HardwareAbstraction, hardware
+except ImportError as e:
+    logger.warning(f"HardwareAbstraction não disponível: {e}")
+    hardware = None
+
+# Importar implementação simulada
+from .gguf_impl import SimulatedGGUF
+
+# Tentar importar implementações reais de GGUF
+try:
+    from .llama_cpp_impl import LlamaCppGGUF
+    LLAMACPP_AVAILABLE = True
+except ImportError:
+    LLAMACPP_AVAILABLE = False
+    logger.warning("Implementação LlamaCpp para GGUF não disponível")
+
+try:
+    from .ctransformers_impl import CTransformersGGUF
+    CTRANSFORMERS_AVAILABLE = True
+except ImportError:
+    CTRANSFORMERS_AVAILABLE = False
+    logger.warning("Implementação CTransformers para GGUF não disponível")
+
+
+def create_optimized_engine(model_path: str, use_gpu: bool = True, **kwargs) -> Any:
+    """
+    Cria motor otimizado para o modelo GGUF.
+    
+    Args:
+        model_path: Caminho para o arquivo modelo GGUF
+        use_gpu: Se deve tentar usar GPU
+        **kwargs: Parâmetros adicionais para o motor
+        
+    Returns:
+        Motor de modelo configurado para a melhor implementação disponível
+    """
+    # Verificar se o arquivo existe
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Arquivo de modelo não encontrado: {model_path}")
+    
+    # Lista de implementações na ordem de prioridade
+    implementations = []
+    
+    # Adicionar implementações disponíveis por ordem de prioridade
+    if LLAMACPP_AVAILABLE and LlamaCppGGUF.is_available():
+        implementations.append(("LlamaCppGGUF", LlamaCppGGUF))
+        
+    if CTRANSFORMERS_AVAILABLE and CTransformersGGUF.is_available():
+        implementations.append(("CTransformersGGUF", CTransformersGGUF))
+    
+    # Sempre adicionar a implementação simulada como fallback
+    implementations.append(("SimulatedGGUF", SimulatedGGUF))
+    
+    # Informar implementações disponíveis
+    if len(implementations) > 1:
+        logger.info(f"Implementações GGUF disponíveis: {', '.join(name for name, _ in implementations)}")
+    
+    # Tentar carregar o modelo com cada implementação
+    last_error = None
+    for name, impl in implementations:
+        try:
+            logger.info(f"Tentando carregar modelo com implementação: {name}")
+            
+            # Ajustar parâmetros com base na implementação
+            model_kwargs = dict(kwargs)
+            model_kwargs["use_gpu"] = use_gpu
+            
+            # Carregar o modelo
+            model = impl.load_model(model_path, **model_kwargs)
+            
+            # Se chegou aqui, o carregamento foi bem-sucedido
+            logger.info(f"Modelo carregado com sucesso usando: {name}")
+            
+            return model
+            
+        except Exception as e:
+            last_error = e
+            logger.warning(f"Falha ao carregar modelo com {name}: {str(e)}")
+            continue
+    
+    # Se chegou aqui, nenhuma implementação funcionou
+    if implementations[-1][0] == "SimulatedGGUF":
+        logger.warning(f"Usando implementação simulada. O modelo não terá capacidades reais.")
+        return SimulatedGGUF.load_model(model_path, use_gpu=use_gpu, **kwargs)
+    else:
+        raise RuntimeError(f"Nenhuma implementação GGUF disponível conseguiu carregar o modelo: {last_error}")
+
+
+def get_gguf_implementation_info() -> Dict[str, Any]:
+    """
+    Retorna informações sobre a implementação GGUF disponível.
+    
+    Returns:
+        Dicionário com informações sobre implementação GGUF
+    """
+    return {
+        "available": NATIVE_GGUF_AVAILABLE,
+        "source": GGUF_SOURCE,
+        "gpu_available": GPUManager().use_gpu,
+        "hardware_info": hardware.system if hardware else None
+    }
+
+
+# Exportar classes e funções públicas
+__all__ = [
+    'GPUManager',
+    'CUDAKernels',
+    'create_optimized_engine',
+    'get_gguf_implementation_info',
+    'SimulatedGGUF',
+    'LLAMACPP_AVAILABLE',
+    'CTRANSFORMERS_AVAILABLE'
+]
+
+if ModelEngine is not None:
+    __all__.append('ModelEngine')
+
+if hardware is not None:
+    __all__.extend(['HardwareAbstraction', 'hardware']) 
