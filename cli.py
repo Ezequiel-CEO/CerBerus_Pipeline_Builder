@@ -17,6 +17,13 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 import logging
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv is optional
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 from cerberus_api.pipeline_builder.core import PipelineBuilder

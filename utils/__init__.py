@@ -28,6 +28,14 @@ from cerberus_api.pipeline_builder.utils.nlp_utils import (
     split_into_chunks,
 )
 
+from cerberus_api.pipeline_builder.utils.vercel_analytics import (
+    get_analytics_script,
+    get_analytics_head,
+    get_launch_kwargs,
+    is_analytics_enabled,
+    get_analytics_status,
+)
+
 __all__ = [
     "save_content_chunk",
     "save_analysis_result",
@@ -43,4 +51,9 @@ __all__ = [
     "detect_language",
     "hash_text",
     "split_into_chunks",
+    "get_analytics_script",
+    "get_analytics_head",
+    "get_launch_kwargs",
+    "is_analytics_enabled",
+    "get_analytics_status",
 ]
