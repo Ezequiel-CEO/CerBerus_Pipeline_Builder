@@ -186,6 +186,16 @@ python -m cerberus_api.pipeline_builder.cli example --type simple
 python -m cerberus_api.pipeline_builder.cli example --type multi
 ```
 
+## Vercel Web Analytics
+
+O PipelineBuilder agora suporta integração com Vercel Web Analytics para monitorar o uso do dashboard. Para habilitar:
+
+1. Crie um arquivo `.env` na raiz do projeto (copie de `.env.example`)
+2. Defina `VERCEL_ANALYTICS_ENABLED=true`
+3. Deploy no Vercel ou execute localmente com Vercel CLI
+
+Para instruções detalhadas, consulte [VERCEL_ANALYTICS_SETUP.md](./VERCEL_ANALYTICS_SETUP.md).
+
 ## Dashboard Interativo
 
 O PipelineBuilder inclui um dashboard interativo criado com Gradio, que oferece as seguintes funcionalidades:

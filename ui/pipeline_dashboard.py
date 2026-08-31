@@ -15,6 +15,13 @@ from typing import Dict, List, Optional, Any, Tuple
 import webbrowser
 from pathlib import Path
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv is optional
+
 from cerberus_api.pipeline_builder.core import PipelineBuilder
 from cerberus_api.pipeline_builder.models import (
     Pipeline,
@@ -23,6 +30,10 @@ from cerberus_api.pipeline_builder.models import (
     ContentCategory,
 )
 from cerberus_api.utils.logging_config import APILogger
+from cerberus_api.pipeline_builder.utils.vercel_analytics import (
+    get_launch_kwargs,
+    get_analytics_status,
+)
 
 # Importar bibliotecas para interface gráfica
 try:
@@ -305,8 +316,23 @@ class PipelineDashboard:
             # Carregar pipelines automaticamente ao iniciar
             interface.load(fn=self._list_pipelines_gradio, outputs=pipelines_output)
 
+        # Get analytics configuration
+        analytics_status = get_analytics_status()
+        if analytics_status["enabled"]:
+            logger.info(f"Vercel Analytics enabled: {analytics_status['analytics_id']}")
+        
+        # Prepare launch arguments with analytics
+        launch_kwargs = {
+            "server_name": "0.0.0.0",
+            "server_port": self.port,
+            "share": False,
+        }
+        
+        # Merge with analytics configuration
+        launch_kwargs = get_launch_kwargs(launch_kwargs)
+        
         # Iniciar servidor Gradio
-        interface.launch(server_name="0.0.0.0", server_port=self.port, share=False)
+        interface.launch(**launch_kwargs)
 
     def _text_interface(self):
         """
